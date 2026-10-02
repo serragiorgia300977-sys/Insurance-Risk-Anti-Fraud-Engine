@@ -1,0 +1,75 @@
+%%pyspark
+from pyspark.sql import functions as F
+from pyspark.sql.types import *
+import random
+
+# ==========================================
+# STEP 1: GENERAZIONE E SCRITTURA TABELLA BRONZE
+# ==========================================
+
+schema = StructType([
+    StructField("ClaimID", StringType(), True),
+    StructField("CustomerID", StringType(), True),
+    StructField("PolicyType", StringType(), True),
+    StructField("ClaimDate", StringType(), True),
+    StructField("ClaimAmountRequested", DoubleType(), True),
+    StructField("AdjusterNotes", StringType(), True)
+])
+
+policy_types = ["Auto", "Polizza Casa", "Responsabilità Civile", "Infortuni"]
+sample_notes = [
+    "Danno compatibile con la dinamica. Nessun elemento sospetto. Importo perizia confermato.",
+    "ATTENZIONE: incongruenza tra la data del verbale e il danno. Possibile frode o sopravvalutazione.",
+    "Cliente abituale, documentazione medica allegata e completa. Danno medio-alto.",
+    "Dinamica poco chiara, testimoni non rintracciabili. Richiede ulteriore perizia approfondita.",
+    "Piccolo danno materiale, gestione rapida consigliata. Fattura riparazione presente."
+]
+
+data = []
+for i in range(1, 1001):
+    claim_id = f"CLM-{2026000 + i}"
+    cust_id = f"CUST-{random.randint(100, 500)}"
+    policy = random.choice(policy_types)
+    date = f"2026-{random.randint(1,12):02d}-{random.randint(1,28):02d}"
+    amount = round(random.uniform(500.0, 25000.0), 2)
+    notes = random.choice(sample_notes)
+    data.append((claim_id, cust_id, policy, date, amount, notes))
+
+df_bronze = spark.createDataFrame(data, schema)
+
+# Scrittura semplice della tabella nel Lakehouse Bronze predefinito
+df_bronze.write.format("delta").mode("overwrite").saveAsTable("raw_claims")
+print("✅ 1/2: Tabella Bronze 'raw_claims' creata con successo!")
+
+# ==========================================
+# STEP 2: TRASFORMAZIONE E SCRITTURA TABELLA SILVER
+# ==========================================
+
+df_raw = spark.table("raw_claims")
+
+df_clean = df_raw.withColumn("ClaimDate", F.to_date(F.col("ClaimDate"), "yyyy-MM-dd")) \
+                 .filter(F.col("ClaimAmountRequested") > 0)
+
+df_analyzed = df_clean.withColumn(
+    "FraudRiskScore",
+    F.when(F.col("AdjusterNotes").contains("incongruenza") | F.col("AdjusterNotes").contains("frode"), F.round(F.lit(0.85), 2))
+     .when(F.col("AdjusterNotes").contains("poco chiara"), F.round(F.lit(0.55), 2))
+     .otherwise(F.round(F.lit(0.15), 2))
+)
+
+df_actuarial = df_analyzed.withColumn(
+    "SeverityFactor",
+    F.when(F.col("PolicyType") == "Auto", 0.85)
+     .when(F.col("PolicyType") == "Infortuni", 0.90)
+     .otherwise(0.75)
+).withColumn(
+    "ExpectedLoss",
+    F.round(F.col("ClaimAmountRequested") * (1 - F.col("FraudRiskScore")) * F.col("SeverityFactor"), 2)
+).withColumn(
+    "RecommendedReserve",
+    F.round(F.col("ExpectedLoss") * 1.10, 2)
+)
+
+# Scrittura della tabella Silver
+df_actuarial.write.format("delta").mode("overwrite").saveAsTable("cleaned_claims_actuarial")
+print("✅ 2/2: Tabella Silver 'cleaned_claims_actuarial' modellata e salvata!")
