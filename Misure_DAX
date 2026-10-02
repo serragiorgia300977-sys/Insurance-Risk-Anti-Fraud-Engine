@@ -1,0 +1,10 @@
+Avg_Fraud_Risk_Score(Indice Medio di Anomalia) = AVERAGE(fact_claims[FraudRiskScore])
+High_Risk_Claims_Count(Volume Sinistri ad Alto Rischio) = 
+CALCULATE(
+    COUNTROWS(fact_claims),
+    fact_claims[FraudRiskScore] >= 0.70
+)
+
+Total_Expected_Loss(Perdita Attesa Complessiva) = SUM(fact_claims[ExpectedLoss])
+
+Total_Recommended_Reserve(Riserva Tecnica Prudenziale) = SUM(fact_claims[RecommendedReserve])
